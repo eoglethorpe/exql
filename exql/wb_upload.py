@@ -1,24 +1,22 @@
 """read in a workbook and upload it to SQL"""
 from openpyxl import Workbook
-
-import etl
-from sqlalchemy import Column, Integer, String, Float, MetaData
+from sqlalchemy import Column, Integer, Unicode, String, Float, MetaData, Table
+from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine
+from sqlalchemy.orm import mapper, create_session
 from openpyxl import load_workbook
 from openpyxl import Workbook
 from openpyxl.cell import column_index_from_string
 import click
 import os
 import re
-import Sheet
+from Sheet import Sheet
+from Upload import Upload
+import utils
+import logging
 
-conn = None
-engine = None
 
+logging.basicConfig(level=logging.DEBUG)
 
 def get_conn():
     return create_engine(os.environ['dbk'])
@@ -40,7 +38,7 @@ def create_with_sheet(sht, tbl_nm):
     cur = conn.cursor()
 
 
-def get_sht_nm(wb, sht_nm):
+def get_sht(wb, sht_nm):
     """decide which sheet to pull from wb (default to first if None)"""
     if sht_nm == None:
         return wb.sheetnames[0]
@@ -87,37 +85,56 @@ def get_sheets(wbs, sheet_name):
 
     return ws
 
-def create_with_sheet(sht, tbl_nm):
+def create_with_sheet(sht, engine):
     """create a SQL table and populate with data"""
-    print sht.col_nms
+    session = create_session(bind=engine, autocommit=False, autoflush=True)
+    metadata = MetaData(bind=engine)
+    tbl_met = Table(sht.tbl_nm, metadata, Column('pk', Integer, primary_key=True),
+                    *(Column(col, String()) for col in sht.col_nms))
 
+    metadata.create_all()
+    logging.info("Table %s has been created" % sht.tbl_nm)
+    mapper(Upload, tbl_met)
+
+    for r_i, row in enumerate(sht.values):
+        up = Upload()
+        assert(len(sht.col_nms) == len(row))
+        for c_i, v in enumerate(row):
+            setattr(up, sht.col_nms[c_i], v)
+
+        if r_i%100 == 0 :
+            logging.info("%i entries have been parsed" % r_i)
+            session.commit()
+        session.add(up)
+
+    session.commit()
+    logging.info("Values have been uploaded to table %s" % sht.tbl_nm)
 
 @click.command()
 @click.option('--src', help='local files or on dropbox?', type = click.Choice(['db','local']))
 @click.option('--sheet_name', help='which sheet should we pull? Defaults to first if blank')
 @click.option('--path', help='file path to xlsx or directory')
 @click.option('--test', help='are we testing?', is_flag = True)
-@click.option('--append', help='we are appending to SQL table or insterting?', is_flag = True)
+@click.option('--append', help='we are appending to SQL table or insterting?', is_flag = True, default=False)
 @click.option('--table_name', help='name of table appending or creating to')
 @click.option('--col_names', help='optional, list of column names in SQL table. defaults to header', required=False)
-def ingest(src, path, test, sht_nm, append, tbl_nm, col_nms, sheet_name):
+def ingest(src, path, test, append, table_name, col_names, sheet_name):
     """iterate through wbs and send to sql"""
+    logging.info("Extracting Worksheet. Stand by.")
+    wb = utils.pull_wb(path, src, True)
+    engine = get_conn()
+    sht_raw = wb.get_sheet_by_name(get_sht(wb, sheet_name))
+    sht = Sheet(ws = sht_raw, name = table_name, col_nms = col_names)
 
-    wb = etl.pull_wb(src, path, True)
-    sht_raw = wb.get_sheet_by_name(get_sht_nm(wb, sht_nm))
-    sht = Sheet(sht_raw, sheet_name)
-
-    if not engine.has_key(tbl_nm) & append:
+    if not engine.has_table(table_name) and append:
         raise Exception('Table does not exist to append to')
 
     elif append:
-        append_sht(sht, tbl_nm)
+        append_sht(sht, engine)
 
     elif not append:
-        create_with_sheet(sht, tbl_nm)
+        create_with_sheet(sht, engine)
 
 if __name__ == '__main__':
-    global engine
-    engine = get_conn()
     ingest()
 
