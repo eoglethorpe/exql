@@ -1,13 +1,13 @@
 import datetime
 import cStringIO
-
 import os
 import re
+from os import listdir
+from os.path import isfile, join
+
 from openpyxl import load_workbook
 from openpyxl import Workbook
 import openpyxl.writer.excel as wrtex
-from os import listdir
-from os.path import isfile, join
 
 
 def get_all_values_from_ws(ws, d):
